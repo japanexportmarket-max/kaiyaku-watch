@@ -1,6 +1,13 @@
 const express = require("express");
 const app = express();
 app.use(express.json());
+app.use(function (_req, res, next) {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+  next();
+});
+app.options("*", (_req, res) => res.sendStatus(204));
 
 const PORT = process.env.PORT || 3000;
 const LINE_TOKEN = process.env.LINE_TOKEN || "";
