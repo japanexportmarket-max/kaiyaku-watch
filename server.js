@@ -19,15 +19,27 @@ app.get("/", (_req, res) => {
 });
 
 app.get("/health", (_req, res) => {
-  res.json({ ok: true, users: users.length, items: items.length });
+  res.json({
+    ok: true,
+    users: users.length,
+    items: items.length,
+    token: LINE_TOKEN ? "on" : "off"
+  });
 });
 
-app.post("/webhook", (req, res) => {
-  const events = (req.body && req.body.events) || [];
+function rememberUser(userId) {
+  if (!userId) return;
+  if (!users.includes(userId)) users.push(userId);
+}
+
+app.all("/webhook", (req, res) => {
+  const body = req.body || {};
+  const events = body.events || [];
+  console.log("webhook", req.method, "events", events.length);
   events.forEach((ev) => {
-    const userId = ev.source && ev.source.userId;
-    if (!userId) return;
-    if (!users.includes(userId)) users.push(userId);
+    const src = ev.source || {};
+    rememberUser(src.userId);
+    console.log("event", ev.type, src.userId || "-");
   });
   res.status(200).send("OK");
 });
@@ -90,7 +102,13 @@ app.all("/tick", async (_req, res) => {
       "\n" +
       d.getFullYear() + "年" + (d.getMonth() + 1) + "月" + d.getDate() + "日までにこの番号へ。\n" +
       (it.phone || "");
-    sent.push(await pushText(it.userId, text));
+    const targets = [];
+    [it.userId].concat(users).forEach(function (id) {
+      if (id && targets.indexOf(id) === -1) targets.push(id);
+    });
+    for (const id of targets) {
+      sent.push(await pushText(id, text));
+    }
   }
   res.json({ sent });
 });
