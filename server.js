@@ -75,7 +75,7 @@ async function pushText(userId, text) {
   return { status: r.status };
 }
 
-app.post("/tick", async (_req, res) => {
+app.all("/tick", async (_req, res) => {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
   const sent = [];
