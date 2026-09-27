@@ -27,28 +27,40 @@ app.get("/health", (_req, res) => {
   });
 });
 
-function rememberUser(userId) {
+function rememberUser(userId, family) {
   if (!userId) return;
-  if (!users.includes(userId)) users.push(userId);
+  let u = users.find((x) => x.id === userId);
+  if (!u) {
+    u = { id: userId, family: family || "" };
+    users.push(u);
+  } else if (family) {
+    u.family = family;
+  }
 }
 
 app.all("/webhook", (req, res) => {
   const body = req.body || {};
   const events = body.events || [];
-  console.log("webhook", req.method, "events", events.length);
   events.forEach((ev) => {
     const src = ev.source || {};
-    rememberUser(src.userId);
-    console.log("event", ev.type, src.userId || "-");
+    const text = ev.message && ev.message.text ? String(ev.message.text).trim() : "";
+    let family = "";
+    if (text.indexOf("家族") === 0) {
+      family = text.replace(/^家族/, "").trim();
+    }
+    rememberUser(src.userId, family);
+    console.log("event", ev.type, src.userId || "-", family || "-");
   });
   res.status(200).send("OK");
 });
 
 app.post("/register", (req, res) => {
   const b = req.body || {};
+  const family = String(b.family || "").trim();
   const item = {
     id: String(Date.now()),
-    userId: b.userId || users[0] || "",
+    userId: b.userId || (users[0] && users[0].id) || "",
+    family: family,
     shop: String(b.shop || "").trim(),
     shipDate: b.shipDate,
     daysBefore: Number(b.daysBefore || 10),
@@ -56,19 +68,6 @@ app.post("/register", (req, res) => {
   };
   items.push(item);
   res.json({ ok: true, item });
-});
-
-app.get("/due", (_req, res) => {
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const due = items.filter((it) => {
-    const d = new Date(it.shipDate + "T00:00:00");
-    d.setDate(d.getDate() - Number(it.daysBefore || 0));
-    d.setHours(0, 0, 0, 0);
-    const diff = Math.round((d - today) / 86400000);
-    return diff === 1 || diff === 0;
-  });
-  res.json({ due });
 });
 
 async function pushText(userId, text) {
@@ -103,9 +102,12 @@ app.all("/tick", async (_req, res) => {
       d.getFullYear() + "年" + (d.getMonth() + 1) + "月" + d.getDate() + "日までにこの番号へ。\n" +
       (it.phone || "");
     const targets = [];
-    [it.userId].concat(users).forEach(function (id) {
-      if (id && targets.indexOf(id) === -1) targets.push(id);
-    });
+    if (it.family) {
+      users.forEach(function (u) {
+        if (u.family === it.family && targets.indexOf(u.id) === -1) targets.push(u.id);
+      });
+    }
+    if (it.userId && targets.indexOf(it.userId) === -1) targets.push(it.userId);
     for (const id of targets) {
       sent.push(await pushText(id, text));
     }
