@@ -11,8 +11,65 @@ app.options("*", (_req, res) => res.sendStatus(204));
 
 const PORT = process.env.PORT || 3000;
 const LINE_TOKEN = process.env.LINE_TOKEN || "";
+const GITHUB_TOKEN = process.env.GITHUB_TOKEN || "";
+const REPO = "japanexportmarket-max/kaiyaku-watch";
+const DATA_PATH = "data.json";
+
 const users = [];
 const items = [];
+let dataSha = "";
+let saveTimer = null;
+
+function ghHeaders() {
+  return {
+    Authorization: "Bearer " + GITHUB_TOKEN,
+    Accept: "application/vnd.github+json",
+    "User-Agent": "kaiyaku-watch",
+    "Content-Type": "application/json"
+  };
+}
+
+async function loadStore() {
+  if (!GITHUB_TOKEN) return;
+  const r = await fetch("https://api.github.com/repos/" + REPO + "/contents/" + DATA_PATH, {
+    headers: ghHeaders()
+  });
+  if (r.status === 404) return;
+  if (!r.ok) {
+    console.log("load failed", r.status);
+    return;
+  }
+  const body = await r.json();
+  dataSha = body.sha || "";
+  const raw = Buffer.from(body.content || "", "base64").toString("utf8");
+  const data = JSON.parse(raw || "{}");
+  users.length = 0;
+  items.length = 0;
+  (data.users || []).forEach((u) => users.push(u));
+  (data.items || []).forEach((it) => items.push(it));
+  console.log("loaded", users.length, items.length);
+}
+
+function scheduleSave() {
+  if (!GITHUB_TOKEN) return;
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(saveStore, 800);
+}
+
+async function saveStore() {
+  if (!GITHUB_TOKEN) return;
+  const content = Buffer.from(JSON.stringify({ users, items })).toString("base64");
+  const payload = { message: "save data", content };
+  if (dataSha) payload.sha = dataSha;
+  const r = await fetch("https://api.github.com/repos/" + REPO + "/contents/" + DATA_PATH, {
+    method: "PUT",
+    headers: ghHeaders(),
+    body: JSON.stringify(payload)
+  });
+  const body = await r.json().catch(() => ({}));
+  if (r.ok && body.content && body.content.sha) dataSha = body.content.sha;
+  else console.log("save failed", r.status);
+}
 
 app.get("/", (_req, res) => {
   res.send("kaiyaku-watch server ok");
@@ -23,7 +80,8 @@ app.get("/health", (_req, res) => {
     ok: true,
     users: users.length,
     items: items.length,
-    token: LINE_TOKEN ? "on" : "off"
+    token: LINE_TOKEN ? "on" : "off",
+    store: GITHUB_TOKEN ? "on" : "off"
   });
 });
 
@@ -33,23 +91,21 @@ function rememberUser(userId, family) {
   if (!u) {
     u = { id: userId, family: family || "" };
     users.push(u);
-  } else if (family) {
+    scheduleSave();
+  } else if (family && u.family !== family) {
     u.family = family;
+    scheduleSave();
   }
 }
 
 app.all("/webhook", (req, res) => {
-  const body = req.body || {};
-  const events = body.events || [];
+  const events = (req.body && req.body.events) || [];
   events.forEach((ev) => {
     const src = ev.source || {};
     const text = ev.message && ev.message.text ? String(ev.message.text).trim() : "";
     let family = "";
-    if (text.indexOf("家族") === 0) {
-      family = text.replace(/^家族/, "").trim();
-    }
+    if (text.indexOf("家族") === 0) family = text.replace(/^家族/, "").trim();
     rememberUser(src.userId, family);
-    console.log("event", ev.type, src.userId || "-", family || "-");
   });
   res.status(200).send("OK");
 });
@@ -60,13 +116,14 @@ app.post("/register", (req, res) => {
   const item = {
     id: String(Date.now()),
     userId: b.userId || (users[0] && users[0].id) || "",
-    family: family,
+    family,
     shop: String(b.shop || "").trim(),
     shipDate: b.shipDate,
     daysBefore: Number(b.daysBefore || 10),
     phone: String(b.phone || "").trim()
   };
   items.push(item);
+  scheduleSave();
   res.json({ ok: true, item });
 });
 
@@ -78,10 +135,7 @@ async function pushText(userId, text) {
       "Content-Type": "application/json",
       Authorization: "Bearer " + LINE_TOKEN
     },
-    body: JSON.stringify({
-      to: userId,
-      messages: [{ type: "text", text }]
-    })
+    body: JSON.stringify({ to: userId, messages: [{ type: "text", text }] })
   });
   return { status: r.status };
 }
@@ -103,18 +157,16 @@ app.all("/tick", async (_req, res) => {
       (it.phone || "");
     const targets = [];
     if (it.family) {
-      users.forEach(function (u) {
+      users.forEach((u) => {
         if (u.family === it.family && targets.indexOf(u.id) === -1) targets.push(u.id);
       });
     }
     if (it.userId && targets.indexOf(it.userId) === -1) targets.push(it.userId);
-    for (const id of targets) {
-      sent.push(await pushText(id, text));
-    }
+    for (const id of targets) sent.push(await pushText(id, text));
   }
   res.json({ sent });
 });
 
-app.listen(PORT, () => {
-  console.log("listening on " + PORT);
+loadStore().finally(() => {
+  app.listen(PORT, () => console.log("listening on " + PORT));
 });
